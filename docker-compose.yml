@@ -1,0 +1,89 @@
+services:
+  tgi:
+    image: ghcr.io/huggingface/text-generation-inference:3.0.0
+    ports:
+      - "${TGI_PORT}:80"
+    environment:
+      - HF_TOKEN=${HF_TOKEN}
+      - MAX_WORKERS=${MAX_WORKERS}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/health"]
+      interval: 10s
+      timeout: 10s
+      retries: 300
+      start_period: 20s
+    command: --model-id ${MODEL_ID} --max-concurrent-requests ${MAX_WORKERS} --quantize fp8
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - ~/.cache/huggingface:/data
+
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS}
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+    volumes:
+      - ./rabbitmq/data:/var/lib/rabbitmq
+      - ./rabbitmq/log:/var/log/rabbitmq
+
+  consumer:
+    build:
+      dockerfile: Dockerfile
+    environment:
+      MAX_WORKERS: ${MAX_WORKERS}
+      RABBITMQ_USER: ${RABBITMQ_USER}
+      RABBITMQ_PASS: ${RABBITMQ_PASS}
+      RABBITMQ_URL: "rabbitmq"
+      RABBITMQ_PORT: ${RABBITMQ_PORT}
+      RABBITMQ_QUEUE_NAME: ${RABBITMQ_QUEUE_NAME}
+      TGI_URL: "tgi"
+      TGI_PORT: "80"
+    container_name: consumer
+    working_dir: /app
+    command: faststream run /app/consumer:app --workers $MAX_WORKERS
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      tgi:
+        condition: service_healthy
+    volumes:
+      - ./consumer.py:/app/consumer.py
+      - ./objects.py:/app/objects.py
+      - ./utils.py:/app/utils.py
+
+  producer:
+    build:
+      dockerfile: Dockerfile
+    environment:
+      RABBITMQ_USER: ${RABBITMQ_USER}
+      RABBITMQ_PASS: ${RABBITMQ_PASS}
+      RABBITMQ_URL: "rabbitmq"
+      RABBITMQ_PORT: ${RABBITMQ_PORT}
+      RABBITMQ_QUEUE_NAME: ${RABBITMQ_QUEUE_NAME}
+    container_name: producer
+    working_dir: /app
+    command: python producer.py
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      tgi:
+        condition: service_healthy
+    volumes:
+      - ./producer.py:/app/producer.py
+      - ./objects.py:/app/objects.py
+      - ./utils.py:/app/utils.py

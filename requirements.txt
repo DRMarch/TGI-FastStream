@@ -1,0 +1,3 @@
+faststream[rabbit]==0.5.33
+faststream[cli]==0.5.33
+huggingface_hub==0.26.5
